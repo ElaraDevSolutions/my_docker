@@ -2,6 +2,11 @@ import sys
 import traceback
 import docker
 import threading
+import subprocess
+import time
+import shutil
+import os
+from pathlib import Path
 
 from PyQt6.QtCore import QTimer, pyqtSignal, QObject, Qt
 from PyQt6.QtGui import QIcon, QAction
@@ -22,10 +27,120 @@ from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtCore import QUrl
 
 
+# Get the directory where the script is located
+if getattr(sys, 'frozen', False):
+    # Running as compiled executable (PyInstaller)
+    APPLICATION_PATH = Path(sys._MEIPASS)
+else:
+    # Running as script
+    APPLICATION_PATH = Path(__file__).parent
+
+# Icon path relative to application directory
+ICON_PATH = str(APPLICATION_PATH / 'icon.png')
+
+
+def check_docker_installed():
+    """Check if Docker is installed on the machine."""
+    return shutil.which('docker') is not None
+
+
+def is_docker_running():
+    """Check if Docker daemon is running."""
+    try:
+        client = docker.from_env()
+        client.ping()
+        return True
+    except Exception:
+        return False
+
+
+def start_docker_daemon():
+    """Attempt to start Docker daemon on macOS and Linux."""
+    system = sys.platform
+    
+    try:
+        if system == 'darwin':  # macOS
+            # On macOS, try to open Docker Desktop
+            subprocess.Popen(['open', '-a', 'Docker'], 
+                            stdout=subprocess.DEVNULL, 
+                            stderr=subprocess.DEVNULL)
+            return True
+        elif system.startswith('linux'):  # Linux
+            # On Linux, try to start Docker service
+            # Try systemctl first (systemd)
+            try:
+                subprocess.run(['systemctl', 'start', 'docker'], 
+                             check=True,
+                             stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL)
+                return True
+            except (subprocess.CalledProcessError, FileNotFoundError):
+                # If it fails, try service (sysvinit)
+                try:
+                    subprocess.run(['service', 'docker', 'start'], 
+                                 check=True,
+                                 stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL)
+                    return True
+                except (subprocess.CalledProcessError, FileNotFoundError):
+                    # Last attempt: Docker Desktop on Linux
+                    subprocess.Popen(['systemctl', '--user', 'start', 'docker-desktop'], 
+                                   stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.DEVNULL)
+                    return True
+        else:
+            print(f"Unsupported operating system: {system}")
+            return False
+    except Exception as e:
+        print(f"Error trying to start Docker: {e}")
+        return False
+
+
+def wait_for_docker(timeout=60):
+    """Wait for Docker daemon to be ready, with timeout."""
+    print("Waiting for Docker to start...")
+    start_time = time.time()
+    
+    while time.time() - start_time < timeout:
+        if is_docker_running():
+            print("Docker is ready!")
+            return True
+        time.sleep(2)
+    
+    return False
+
+
+def ensure_docker_running():
+    """
+    Ensure Docker is installed and running.
+    Returns True if everything is OK, False otherwise.
+    """
+    # Check if Docker is installed
+    if not check_docker_installed():
+        return False, "Docker is not installed on this machine. Please install Docker Desktop."
+    
+    # Check if Docker is running
+    if is_docker_running():
+        print("Docker is already running.")
+        return True, None
+    
+    # Try to start Docker
+    print("Docker is not running. Attempting to start...")
+    if not start_docker_daemon():
+        return False, "Could not start Docker automatically."
+    
+    # Wait for Docker to be ready
+    if wait_for_docker():
+        return True, None
+    else:
+        return False, "Docker was started but did not become ready in time. Please try again."
+
+
 class TrayIcon(QSystemTrayIcon):
     def __init__(self, app):
-        super(TrayIcon, self).__init__(QIcon('icon.png'), parent=app)
+        super(TrayIcon, self).__init__(QIcon(ICON_PATH), parent=app)
         self.setToolTip("My Docker")
+
 
 
 class Details(QWidget):
@@ -231,7 +346,7 @@ class About(QWidget):
         # Left: logo (icon.png)
         logo_label = QLabel()
         try:
-            pix = QIcon('icon.png').pixmap(64, 64)
+            pix = QIcon(ICON_PATH).pixmap(64, 64)
             logo_label.setPixmap(pix)
         except Exception:
             logo_label.setText('My Docker')
@@ -272,4 +387,18 @@ class About(QWidget):
 
 
 if __name__ == '__main__':
+    # Check and ensure Docker is running before starting the application
+    docker_ok, error_message = ensure_docker_running()
+    
+    if not docker_ok:
+        # Create a temporary application just to show the error
+        app = QApplication(sys.argv)
+        QMessageBox.critical(
+            None, 
+            "Error - Docker not available", 
+            error_message
+        )
+        sys.exit(1)
+    
+    # If Docker is OK, start the application normally
     Application()
