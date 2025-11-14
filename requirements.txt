@@ -2,3 +2,4 @@ PyQt6==6.10.0
 docker==7.1.0
 six==1.16.0
 pyinstaller==6.11.1
+pillow==11.0.0
